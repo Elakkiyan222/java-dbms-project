@@ -1,0 +1,223 @@
+import javax.swing.*;
+import javax.swing.table.DefaultTableModel;
+import java.awt.*;
+import java.sql.*;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+import java.util.List;
+import java.util.ArrayList;
+public class SmartAIAnalysisPage extends JFrame {
+
+    private JTable table;
+
+    public SmartAIAnalysisPage() {
+
+        setTitle("SMART CUSTOMER ANALYSIS");
+        setSize(1200, 600);
+        setLayout(new BorderLayout());
+        setLocationRelativeTo(null);
+
+        table = new JTable(new DefaultTableModel(
+                new Object[]{
+                        "User ID",
+                        "Product ID",
+                        "Product Name",
+                        "Total Orders",
+                        "Last Purchase",
+                        "Avg Gap (Days)",
+                        "Score",
+                        "Status",
+                        "Reason"
+                }, 0
+        ));
+
+        add(new JScrollPane(table), BorderLayout.CENTER);
+
+        table.addMouseListener(new java.awt.event.MouseAdapter() {
+            public void mouseClicked(java.awt.event.MouseEvent evt) {
+
+                int row = table.getSelectedRow();
+
+                if (row != -1) {
+
+                    int userId = (int) table.getValueAt(row, 0);
+                    int productId = (int) table.getValueAt(row, 1);
+
+                    StringBuilder extra = new StringBuilder();
+
+                    try {
+                        Connection con = DBConnection.getConnection();
+
+                        String sql =
+                                "SELECT order_date FROM orders o " +
+                                "JOIN order_items oi ON o.order_id=oi.order_id " +
+                                "WHERE o.user_id=? AND oi.product_id=? " +
+                                "ORDER BY order_date DESC LIMIT 3";
+
+                        PreparedStatement pst = con.prepareStatement(sql);
+                        pst.setInt(1, userId);
+                        pst.setInt(2, productId);
+
+                        ResultSet rs = pst.executeQuery();
+
+                        java.util.List<LocalDate> dates = new java.util.ArrayList<>();
+
+                        while (rs.next()) {
+                            dates.add(rs.getDate("order_date").toLocalDate());
+                        }
+
+                        extra.append("\nLast Purchases:\n");
+
+                        for (LocalDate d : dates) {
+                            extra.append(d).append("\n");
+                        }
+
+                        if (dates.size() >= 2) {
+                            extra.append("\nGap Between Orders:\n");
+
+                            for (int i = 0; i < dates.size() - 1; i++) {
+                                long gap = ChronoUnit.DAYS.between(dates.get(i + 1), dates.get(i));
+                                extra.append("Gap ").append(i + 1).append(": ")
+                                     .append(gap).append(" days\n");
+                            }
+                        }
+
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                    }
+
+                    JOptionPane.showMessageDialog(
+                            null,
+                            "🧠 CUSTOMER INSIGHT\n\n" +
+                                    "User ID: " + userId + "\n" +
+                                    "Product: " + table.getValueAt(row, 2) + "\n" +
+                                    "Status: " + table.getValueAt(row, 7) + "\n\n" +
+                                    "Reason:\n" + table.getValueAt(row, 8) +
+                                    "\n" + extra.toString(),
+                            "AI ANALYSIS",
+                            JOptionPane.INFORMATION_MESSAGE
+                    );
+                }
+            }
+        });
+
+        loadAIAnalysis();
+    }
+
+    private void loadAIAnalysis() {
+
+        try {
+            Connection con = DBConnection.getConnection();
+
+            String sql =
+                    "SELECT o.user_id, oi.product_id, p.product_name, o.order_date " +
+                            "FROM orders o " +
+                            "JOIN order_items oi ON o.order_id = oi.order_id " +
+                            "JOIN product p ON oi.product_id = p.product_id " +
+                            "ORDER BY o.user_id, oi.product_id, o.order_date";
+
+            PreparedStatement pst = con.prepareStatement(sql);
+            ResultSet rs = pst.executeQuery();
+
+            DefaultTableModel model = (DefaultTableModel) table.getModel();
+            model.setRowCount(0);
+
+            Map<String, List<LocalDate>> map = new HashMap<>();
+            Map<String, String> productNames = new HashMap<>();
+
+            while (rs.next()) {
+
+                int userId = rs.getInt("user_id");
+                int productId = rs.getInt("product_id");
+                String productName = rs.getString("product_name");
+                LocalDate date = rs.getDate("order_date").toLocalDate();
+
+                String key = userId + "-" + productId;
+
+                map.computeIfAbsent(key, k -> new ArrayList<>()).add(date);
+                productNames.put(key, productName);
+            }
+
+            LocalDate today = LocalDate.now();
+
+            for (String key : map.keySet()) {
+
+                String[] parts = key.split("-");
+                int userId = Integer.parseInt(parts[0]);
+                int productId = Integer.parseInt(parts[1]);
+
+                List<LocalDate> dates = map.get(key);
+                Collections.sort(dates);
+
+                String productName = productNames.get(key);
+
+                int totalOrders = dates.size();
+                LocalDate lastBuy = dates.get(dates.size() - 1);
+
+                long avgGap = 0;
+
+                if (dates.size() > 1) {
+                    long sum = 0;
+                    for (int i = 1; i < dates.size(); i++) {
+                        sum += ChronoUnit.DAYS.between(dates.get(i - 1), dates.get(i));
+                    }
+                    avgGap = sum / (dates.size() - 1);
+                }
+
+                long daysSinceLast = ChronoUnit.DAYS.between(lastBuy, today);
+
+                int score = 100;
+                score -= daysSinceLast;
+                score += totalOrders * 5;
+                score -= avgGap / 2;
+
+                String status;
+                String reason;
+
+                if (daysSinceLast > (avgGap == 0 ? 30 : avgGap * 2)) {
+
+                    status = "🚨 LOST CUSTOMER";
+                    reason = productName + " not purchased for " + daysSinceLast +
+                            " days. Expected cycle broken.";
+
+                } else {
+
+                    status = "⚠ AT RISK";
+
+                    if (totalOrders < 3) {
+                        reason = "Low engagement on " + productName +
+                                " (only " + totalOrders + " orders)";
+                    }
+                    else if (avgGap > 0 && daysSinceLast > avgGap) {
+                        reason = productName + " usually bought every " +
+                                avgGap + " days, but not purchased for " +
+                                daysSinceLast + " days.";
+                    }
+                    else {
+                        reason = "Irregular purchase pattern detected for " + productName;
+                    }
+                }
+
+                model.addRow(new Object[]{
+                        userId,
+                        productId,
+                        productName,
+                        totalOrders,
+                        lastBuy,
+                        avgGap,
+                        score,
+                        status,
+                        reason
+                });
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> new SmartAIAnalysisPage().setVisible(true));
+    }
+}
